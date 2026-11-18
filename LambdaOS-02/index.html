@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>λOS — Lisp-Extensible Web OS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            os: {
+              bg: '#090b10',
+              surface: '#11151f',
+              panel: '#161b28',
+              border: '#242c40',
+              accent: '#38bdf8',
+              accent2: '#a855f7',
+              mint: '#34d399',
+              amber: '#fbbf24',
+              rose: '#fb7185',
+              text: '#e2e8f0',
+              muted: '#94a3b8'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="default-wallpaper" id="desktop-root">
+
+  <!-- TOP STATUS BAR -->
+  <header id="top-bar" class="fixed top-0 left-0 right-0 h-[38px] bg-[#0d1018]/90 backdrop-blur-md border-b border-os-border z-[9000] flex items-center justify-between px-3 text-xs">
+    <!-- Left: System Menu & Active Window -->
+    <div class="flex items-center gap-2 min-w-0">
+      <div class="relative">
+        <button id="launcher-btn" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-os-accent/15 hover:bg-os-accent/25 text-os-accent font-mono font-semibold border border-os-accent/30 transition cursor-pointer">
+          <span class="text-sm leading-none">λ</span>
+          <span>LambdaOS</span>
+        </button>
+
+        <!-- Launcher Dropdown -->
+        <div id="launcher-menu" class="hidden absolute left-0 mt-1.5 w-64 bg-[#121723] border border-os-border rounded-xl shadow-2xl p-1.5 z-[9500]">
+          <div class="px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-wider text-os-muted border-b border-os-border/60 mb-1">
+            System Applications
+          </div>
+          <button data-launch="repl" class="launcher-item w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-os-accent font-mono font-bold">&gt;_</span> Lisp REPL &amp; Scratchpad</span>
+            <span class="text-[10px] font-mono text-os-muted">repl</span>
+          </button>
+          <button data-launch="editor" class="launcher-item w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-os-mint font-mono font-bold">{}</span> VFS Code Editor</span>
+            <span class="text-[10px] font-mono text-os-muted">vfs</span>
+          </button>
+          <button data-launch="docs" class="launcher-item w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-os-amber font-mono font-bold">?</span> Lisp OS API Reference</span>
+            <span class="text-[10px] font-mono text-os-muted">docs</span>
+          </button>
+
+          <div class="px-2.5 py-1.5 mt-1 text-[10px] font-mono uppercase tracking-wider text-os-muted border-t border-b border-os-border/60 mb-1">
+            Lisp Scripts (/apps)
+          </div>
+          <button data-run-script="/apps/calculator.lisp" class="launcher-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-purple-400 font-mono">λ</span> Calculator.lisp</span>
+            <span class="text-[10px] font-mono text-os-muted">run</span>
+          </button>
+          <button data-run-script="/apps/todo.lisp" class="launcher-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-purple-400 font-mono">λ</span> TodoList.lisp</span>
+            <span class="text-[10px] font-mono text-os-muted">run</span>
+          </button>
+          <button data-run-script="/apps/clock-theme.lisp" class="launcher-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-left transition">
+            <span class="flex items-center gap-2"><span class="text-purple-400 font-mono">λ</span> ThemeSwitcher.lisp</span>
+            <span class="text-[10px] font-mono text-os-muted">run</span>
+          </button>
+
+          <div class="border-t border-os-border/60 mt-1 pt-1 flex items-center gap-1">
+            <button id="reboot-os-btn" class="flex-1 px-2.5 py-1.5 rounded-lg hover:bg-os-accent/15 text-os-accent text-xs font-medium text-center transition">
+              Re-run /init.lisp
+            </button>
+            <button id="reset-os-btn" class="flex-1 px-2.5 py-1.5 rounded-lg hover:bg-rose-500/15 text-os-rose text-xs font-medium text-center transition">
+              Reset VFS
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <span class="text-os-border">|</span>
+      <span id="active-window-title" class="font-medium text-os-muted truncate max-w-[140px] sm:max-w-xs">Desktop</span>
+    </div>
+
+    <!-- Center: Minimized / Running Window Tabs -->
+    <div id="taskbar-windows" class="hidden md:flex items-center gap-1.5 overflow-x-auto max-w-md px-2"></div>
+
+    <!-- Right: Custom Lisp Widgets + Global REPL Toggle + System Clock -->
+    <div class="flex items-center gap-2">
+      <div id="custom-topbar-widgets" class="flex items-center gap-1.5"></div>
+
+      <button id="toggle-overlay-repl" title="Toggle Quick Lisp REPL (Alt+Space)" class="flex items-center gap-1 px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-os-border text-os-text font-mono transition cursor-pointer">
+        <span class="text-os-accent">&gt;_</span>
+        <span class="hidden sm:inline">Eval</span>
+      </button>
+
+      <div id="system-clock" class="font-mono text-os-muted bg-black/30 px-2 py-1 rounded-md border border-os-border/60">
+        00:00:00
+      </div>
+    </div>
+  </header>
+
+  <!-- GLOBAL QUICK REPL OVERLAY -->
+  <div id="quick-repl-overlay" class="hidden fixed top-[38px] left-0 right-0 bg-[#0d111a]/95 backdrop-blur-xl border-b border-os-accent/40 shadow-2xl z-[8900] p-3 sm:px-6 transition-all">
+    <div class="max-w-4xl mx-auto">
+      <div class="flex items-center justify-between mb-1.5 text-[11px] font-mono text-os-muted">
+        <span>QUICK LISP EVALUATOR (Press Enter to eval, Esc to close)</span>
+        <span class="text-os-accent">Env: global-user</span>
+      </div>
+      <div class="flex items-center gap-2 bg-black/50 border border-os-border focus-within:border-os-accent rounded-lg px-3 py-2">
+        <span class="font-mono text-os-accent font-bold">λ&gt;</span>
+        <input id="quick-repl-input" type="text" placeholder="(notify &quot;Hello&quot; &quot;Evaluated straight from the overlay!&quot;)" class="w-full bg-transparent font-mono text-sm text-white focus:outline-none" autocomplete="off" spellcheck="false" />
+        <button id="quick-repl-run" class="px-3 py-1 rounded bg-os-accent text-slate-950 font-mono font-semibold text-xs hover:bg-sky-300 transition">Eval</button>
+      </div>
+      <div id="quick-repl-output" class="mt-2 font-mono text-xs text-os-mint max-h-28 overflow-y-auto selectable"></div>
+    </div>
+  </div>
+
+  <!-- DESKTOP ICON GRID -->
+  <main id="desktop-area" class="relative w-full h-full pt-[38px] overflow-hidden">
+    <div id="desktop-icons" class="p-4 grid grid-flow-col grid-rows-6 gap-3 w-fit">
+      <!-- Built-in & Lisp-registered desktop icons render here -->
+    </div>
+
+    <!-- WINDOW LAYER -->
+    <div id="window-layer" class="absolute inset-0 top-[38px] pointer-events-none"></div>
+  </main>
+
+  <!-- TOAST NOTIFICATIONS CONTAINER -->
+  <div id="toast-container" class="fixed bottom-4 right-4 z-[9900] flex flex-col gap-2 max-w-xs w-full pointer-events-none"></div>
+
+  <!-- CONFIRMATION MODAL (Replaces window.confirm) -->
+  <div id="os-modal-backdrop" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-[9950] flex items-center justify-center p-4">
+    <div class="bg-[#131824] border border-os-border rounded-xl max-w-sm w-full p-5 shadow-2xl">
+      <h3 id="os-modal-title" class="text-base font-semibold text-white mb-1.5">Confirm Action</h3>
+      <p id="os-modal-body" class="text-xs text-os-muted mb-4 leading-relaxed"></p>
+      <div class="flex justify-end gap-2">
+        <button id="os-modal-cancel" class="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-os-text transition">Cancel</button>
+        <button id="os-modal-confirm" class="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-xs font-semibold text-white transition">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="os.js"></script>
+</body>
+</html>
