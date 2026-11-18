@@ -188,14 +188,22 @@ class LispInterpreter {
 
   tokenize(source) {
     const tokens = [];
-    let i = 0;
+    let i = 0, line = 1, col = 1;
+    const loc = () => ({ line, col });
+    const adv = (n = 1) => {
+      for (let k = 0; k < n && i < source.length; k++) {
+        if (source[i] === '\n') { line++; col = 1; } else { col++; }
+        i++;
+      }
+    };
     while (i < source.length) {
       const ch = source[i];
-      if (/\s/.test(ch)) { i++; continue; }
-      if (ch === ';') { while (i < source.length && source[i] !== '\n') i++; continue; }
-      if (ch === '(' || ch === ')' || ch === "'") { tokens.push(ch); i++; continue; }
+      if (/\s/.test(ch)) { adv(); continue; }
+      if (ch === ';') { while (i < source.length && source[i] !== '\n') adv(); continue; }
+      if (ch === '(' || ch === ')' || ch === "'") { tokens.push({ kind: 'paren', value: ch, pos: loc() }); adv(); continue; }
       if (ch === '"') {
-        let str = ''; i++;
+        const start = loc();
+        let str = ''; adv();
         while (i < source.length && source[i] !== '"') {
           if (source[i] === '\\' && i + 1 < source.length) {
             const next = source[i + 1];
@@ -204,46 +212,67 @@ class LispInterpreter {
             else if (next === '"') str += '"';
             else if (next === '\\') str += '\\';
             else str += next;
-            i += 2;
-          } else { str += source[i++]; }
+            adv(2);
+          } else { str += source[i]; adv(); }
         }
-        i++; tokens.push({ type: 'string', value: str });
+        adv();
+        tokens.push({ kind: 'string', value: str, pos: start });
         continue;
       }
+      const start = loc();
       let atom = '';
-      while (i < source.length && !/[\s();"]/.test(source[i])) { atom += source[i++]; }
-      tokens.push(atom);
+      while (i < source.length && !/[\s();"]/.test(source[i])) { atom += source[i]; adv(); }
+      tokens.push({ kind: 'atom', value: atom, pos: start });
     }
     return tokens;
   }
 
-  parseTokens(tokens) {
-    if (tokens.length === 0) throw new Error('SyntaxError: Unexpected EOF');
-    const token = tokens.shift();
-    if (token === '(') {
-      const list = [];
-      while (tokens[0] !== ')') {
-        if (tokens.length === 0) throw new Error('SyntaxError: Missing ")"');
-        list.push(this.parseTokens(tokens));
+  parseTokens(tokens, open) {
+    if (tokens.length === 0) {
+      if (open) {
+        const err = new Error(`SyntaxError: Missing ")" (unclosed list starting at ${open.pos.line}:${open.pos.col})`);
+        err.pos = open.pos;
+        throw err;
       }
-      tokens.shift(); return list;
-    } else if (token === ')') {
-      throw new Error('SyntaxError: Unexpected ")"');
-    } else if (token === "'") {
-      return [sym('quote'), this.parseTokens(tokens)];
-    } else if (typeof token === 'object' && token.type === 'string') {
+      throw new Error('SyntaxError: Unexpected EOF');
+    }
+    const token = tokens.shift();
+    if (token.kind === 'paren' && token.value === '(') {
+      const list = [];
+      list.__pos = token.pos;
+      while (true) {
+        if (tokens.length === 0) {
+          const err = new Error(`SyntaxError: Missing ")" (unclosed list starting at ${token.pos.line}:${token.pos.col})`);
+          err.pos = token.pos;
+          throw err;
+        }
+        if (tokens[0].kind === 'paren' && tokens[0].value === ')') { tokens.shift(); break; }
+        list.push(this.parseTokens(tokens, token));
+      }
+      return list;
+    } else if (token.kind === 'paren' && token.value === ')') {
+      const err = new Error(`SyntaxError: Unexpected ")" (at ${token.pos.line}:${token.pos.col})`);
+      err.pos = token.pos;
+      throw err;
+    } else if (token.kind === 'paren' && token.value === "'") {
+      const expr = [sym('quote'), this.parseTokens(tokens, open)];
+      expr.__pos = token.pos;
+      return expr;
+    } else if (token.kind === 'string') {
       return token.value;
     } else {
-      return this.atom(token);
+      return this.atom(token.value, token.pos);
     }
   }
 
-  atom(token) {
+  atom(token, pos) {
     if (token === '#t' || token === 'true') return true;
     if (token === '#f' || token === 'false') return false;
     if (token === 'nil' || token === 'null') return null;
     if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(token)) return Number(token);
-    return sym(token);
+    const s = sym(token);
+    if (pos) s.pos = pos;
+    return s;
   }
 
   parseAll(source) {
@@ -256,6 +285,7 @@ class LispInterpreter {
   isTruthy(val) { return val !== false && val !== null && val !== undefined; }
 
   async _eval(x, env = this.globalEnv) {
+    try {
     while (true) {
       if (x === null || typeof x === 'number' || typeof x === 'boolean' || typeof x === 'string') return x;
       if (x instanceof LispSymbol) return env.get(x.name);
@@ -341,6 +371,17 @@ class LispInterpreter {
       if (typeof proc === 'function') return await proc(...args);
       throw new Error(`TypeError: '${this.print(first)}' is not callable`);
     }
+    } catch (err) {
+      if (err && typeof err === 'object' && !err.lambdaError) {
+        const pos = (x && (x.__pos || x.pos)) || null;
+        if (pos) {
+          err.pos = pos;
+          err.message = `${err.message} (at ${pos.line}:${pos.col})`;
+        }
+        err.lambdaError = true;
+      }
+      throw err;
+    }
   }
 
   makeClosure(params, body, closureEnv) {
@@ -408,6 +449,7 @@ class LispInterpreter {
         return res;
     });
     g.define('length', (seq) => (seq && typeof seq.length === 'number' ? seq.length : 0));
+    g.define('floor', (n) => Math.floor(Number(n) || 0));
     g.define('slice', (s, start, end) => s.slice(start, end));
     g.define('filter', async (fn, lst) => {
         const res = [];
@@ -425,6 +467,26 @@ class LispInterpreter {
 // ----------------------------------------------------------------------------
 // 4. WINDOW MANAGER & DESKTOP ENVIRONMENT
 // ----------------------------------------------------------------------------
+const ICONS = {
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  restore: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  calc: '<rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="8" y2="12"/><line x1="12" y1="12" x2="12" y2="12"/><line x1="16" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="12" y1="16" x2="12" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/>',
+  todo: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  docs: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  script: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/>'
+};
+const iconSvg = (name, size = 20) => {
+  const inner = ICONS[name] || ICONS.script;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+};
+
 class LambdaOS {
   constructor() {
     this.vfs = new VirtualFileSystem();
@@ -436,8 +498,10 @@ class LambdaOS {
     this.intervals = new Map();
     this.customIcons = [];
     this.topBarWidgets = new Map();
+    this.iconSettings = {};
 
     this.installOSPrimitives();
+    this.loadIconSettings();
     this.bindUIEvents();
     this.startSystemClock();
     this.renderDesktopIcons();
@@ -481,6 +545,16 @@ class LambdaOS {
         append('done in ' + Math.round(performance.now() - t0) + 'ms', 'text-slate-500');
       } catch (err) {
         append('✖ ' + (err && err.message ? err.message : String(err)), 'text-rose-400');
+        const pos = err && err.pos;
+        if (pos) {
+          const codeLines = String(code).split('\n');
+          const srcLine = codeLines[pos.line - 1];
+          if (srcLine !== undefined) {
+            const gutter = String(pos.line);
+            append('  ' + gutter + ' | ' + srcLine, 'text-rose-300/90');
+            append('  ' + ' '.repeat(gutter.length) + ' | ' + ' '.repeat(Math.max(0, pos.col - 1)) + '^^^', 'text-rose-300/90');
+          }
+        }
       } finally {
         this._outputSink = prevSink;
       }
@@ -525,6 +599,45 @@ class LambdaOS {
       await this.vfs.write(dst, content);
       return dst;
     });
+    g.define('fs-ext', (name) => { const m = String(name || '').match(/\.([A-Za-z0-9]+)$/); return m ? m[1].toLowerCase() : ''; });
+    g.define('get-setting', async (key) => {
+      try {
+        const r = await fetch('/api/settings/' + encodeURIComponent(key));
+        const d = await r.json();
+        return d.value;
+      } catch { return null; }
+    });
+    g.define('set-setting!', async (key, value) => {
+      await fetch('/api/settings/' + encodeURIComponent(key), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value })
+      });
+      return true;
+    });
+    g.define('del-setting!', async (key) => {
+      await fetch('/api/settings/' + encodeURIComponent(key), { method: 'DELETE' });
+      return true;
+    });
+    g.define('desktop-icons', () => this.desktopIconItems().map(i => [i.label, this.iconSettings['icon:' + i.label] || i.iconChar]));
+    g.define('refresh-desktop-icons', async () => { await this.loadIconSettings(); return true; });
+    g.define('builtin-icon-names', () => ['script', 'file', 'folder', 'calc', 'todo', 'terminal', 'code', 'docs', 'image', 'upload', 'save', 'restore', 'download']);
+    g.define('set-icon', async (label, iconPath, force) => {
+      const key = 'icon:' + label;
+      if (!force && this.iconSettings[key]) return false;
+      let svg = '';
+      try { svg = String(await this.vfs.read(String(iconPath)) || '').trim(); } catch (err) { throw new Error('cannot read icon file: ' + iconPath); }
+      if (!svg.toLowerCase().startsWith('<svg')) throw new Error('not an SVG file: ' + iconPath);
+      this.iconSettings[key] = svg;
+      await fetch('/api/settings/' + encodeURIComponent(key), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: svg })
+      });
+      await this.renderDesktopIcons();
+      return true;
+    });
+    g.define('icon-svg', (name, size) => iconSvg(name, size || 24));
     g.define('fs-join', (...parts) => {
       const segs = parts.map(String).join('/').split('/').filter(s => s.length > 0);
       return '/' + segs.join('/');
@@ -604,21 +717,143 @@ class LambdaOS {
       URL.revokeObjectURL(url);
     });
 
-    g.define('fs-upload-dialog', () => {
+    const uploadFiles = async (files, dirGetter, overwriteAsk) => {
+      const raw = await Promise.resolve(typeof dirGetter === 'function' ? dirGetter() : (dirGetter || '/uploads'));
+      const rawStr = (raw === null || raw === undefined || raw === '') ? '/uploads' : String(raw);
+      let dir = rawStr.startsWith('/') ? rawStr.replace(/\/+$/g, '') : '/' + rawStr.replace(/\/+$/g, '');
+      if (!dir) dir = '/uploads';
+      const paths = [];
+      for (const file of Array.from(files || [])) {
+        try {
+          const safeName = String(file.name).replace(/[\/\\]/g, '_');
+          const content = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = ev => res(ev.target.result);
+            r.onerror = rej;
+            r.readAsText(file);
+          });
+          const path = (dir === '/' ? '' : dir) + '/' + safeName;
+          const exists = await this.vfs.read(path).then(() => true, () => false);
+          if (exists && typeof overwriteAsk === 'function' && !(await overwriteAsk(path))) {
+            this.notify('Upload skipped', path);
+            continue;
+          }
+          await this.vfs.write(path, content);
+          paths.push(path);
+        } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          this.notify('Upload Failed', file.name + ': ' + msg);
+        }
+      }
+      return paths;
+    };
+    const parseSnapshot = (text) => {
+      const data = JSON.parse(text);
+      const files = data && data.files;
+      if (!files || typeof files !== 'object') throw new Error('Invalid snapshot format (expected {"files": {path: content}})');
+      const entries = Object.entries(files).filter(([p]) => typeof p === 'string' && p.startsWith('/'));
+      const bytes = entries.reduce((acc, [, c]) => acc + String(c == null ? '' : c).length, 0);
+      return { files: Object.fromEntries(entries), count: entries.length, bytes, paths: entries.map(([p]) => p).sort() };
+    };
+    g.define('fs-snapshot-files!', async () => {
+      const res = await fetch('/api/snapshot');
+      const data = await res.json();
+      const files = (data && data.files) || {};
+      return Object.entries(files).map(([p, c]) => [p, String(c == null ? '' : c).length]).sort((a, b) => a[0].localeCompare(b[0]));
+    });
+    g.define('fs-download-snapshot!', () => { this.downloadSnapshot(); return true; });
+    g.define('fs-download-file!', async (path) => {
+      const content = await this.vfs.read(path);
+      const blob = new Blob([content], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = String(path).split('/').pop() || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    });
+    g.define('fs-pick-restore!', (cb) => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.onchange = async (e) => {
+      input.accept = '.json';
+      input.onchange = (e) => {
         const file = e.target.files[0];
+        if (!file) return;
         const reader = new FileReader();
-        reader.onload = async (event) => {
-          const content = event.target.result;
-          const path = '/uploads/' + file.name;
-          await this.vfs.write(path, content);
-          this.notify('File Uploaded', `Saved to ${path}`);
+        reader.onload = (event) => {
+          try {
+            const parsed = parseSnapshot(String(event.target.result));
+            this._pendingRestore = parsed.files;
+            if (typeof cb === 'function') cb([parsed.count, parsed.bytes, ...parsed.paths]);
+          } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            this.notify('Snapshot Error', msg);
+            if (typeof cb === 'function') cb(null);
+          }
         };
         reader.readAsText(file);
       };
       input.click();
+    });
+    g.define('fs-restore-drop!', (el, cb) => {
+      el.addEventListener('dragover', (e) => { e.preventDefault(); el.classList.add('border-os-accent', 'text-slate-200'); });
+      el.addEventListener('dragleave', () => el.classList.remove('border-os-accent', 'text-slate-200'));
+      el.addEventListener('drop', (e) => {
+        e.preventDefault(); el.classList.remove('border-os-accent', 'text-slate-200');
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const parsed = parseSnapshot(String(event.target.result));
+            this._pendingRestore = parsed.files;
+            if (typeof cb === 'function') cb([parsed.count, parsed.bytes, ...parsed.paths]);
+          } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            this.notify('Snapshot Error', msg);
+            if (typeof cb === 'function') cb(null);
+          }
+        };
+        reader.readAsText(file);
+      });
+      return el;
+    });
+    g.define('fs-do-restore!', async () => {
+      if (!this._pendingRestore) return false;
+      const files = this._pendingRestore;
+      this._pendingRestore = null;
+      const res = await fetch('/api/snapshot/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files })
+      });
+      if (!res.ok) { this.notify('Restore Failed', 'HTTP ' + res.status); return false; }
+      this.notify('Snapshot', 'VFS restored from snapshot.');
+      setTimeout(() => location.reload(), 500);
+      return true;
+    });
+    g.define('fs-upload-browse!', (dirGetter, cb, overwriteAsk) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.onchange = async (e) => {
+        const paths = await uploadFiles(e.target.files, dirGetter, overwriteAsk);
+        if (paths.length && typeof cb === 'function') cb(paths);
+      };
+      input.click();
+    });
+    g.define('fs-upload-drop!', (el, dirGetter, cb, overwriteAsk) => {
+      el.addEventListener('dragover', (e) => { e.preventDefault(); el.classList.add('border-os-accent', 'text-slate-200'); });
+      el.addEventListener('dragleave', () => el.classList.remove('border-os-accent', 'text-slate-200'));
+      el.addEventListener('drop', async (e) => {
+        e.preventDefault(); el.classList.remove('border-os-accent', 'text-slate-200');
+        const paths = await uploadFiles(e.dataTransfer.files, dirGetter, overwriteAsk);
+        if (paths.length && typeof cb === 'function') cb(paths);
+      });
+      return el;
     });
 
     g.define('el', (tag, attrs, ...children) => {
@@ -643,17 +878,39 @@ class LambdaOS {
     this.renderDesktopIcons();
   }
 
-  async renderDesktopIcons() {
-    const container = document.getElementById('desktop-icons');
-    container.innerHTML = '';
-    const items = [
-      { label: 'Upload File', iconChar: '⇡', color: 'text-os-amber', action: () => this.lisp.globalEnv.get('fs-upload-dialog')() },
-      { label: 'Backup VFS', iconChar: '💾', color: 'text-emerald-400', action: () => this.downloadSnapshot() },
-      { label: 'Restore VFS', iconChar: '📂', color: 'text-rose-400', action: () => this.uploadSnapshot() },
+  async loadIconSettings() {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      this.iconSettings = { ...this.iconSettings };
+      for (const [k, v] of Object.entries(data.settings || {})) {
+        if (k.startsWith('icon:') && v) this.iconSettings[k] = v;
+      }
+      this.renderDesktopIcons();
+    } catch (e) {
+      console.error('icon settings load failed', e);
+    }
+  }
+
+  iconHtml(iconKey, size = 22) {
+    if (!iconKey) return iconSvg('script', size);
+    const s = String(iconKey).trim();
+    if (s.startsWith('<svg')) return s;
+    return iconSvg(s.toLowerCase(), size);
+  }
+
+  desktopIconItems() {
+    return [
       ...this.customIcons.map(i => ({ ...i, color: 'text-sky-300', action: () => {
         try { return Promise.resolve(i.fn()).catch(err => this.notify('Error', err.message)); } catch (err) { this.notify('Error', err.message); }
       } }))
     ];
+  }
+
+  async renderDesktopIcons() {
+    const container = document.getElementById('desktop-icons');
+    container.innerHTML = '';
+    const items = this.desktopIconItems();
     const seen = new Set();
     const uniqueItems = items.filter(i => {
       if (seen.has(i.label)) return false;
@@ -661,9 +918,10 @@ class LambdaOS {
       return true;
     });
     for (const item of uniqueItems) {
+      const stored = this.iconSettings['icon:' + item.label];
       const btn = document.createElement('button');
       btn.className = 'desktop-icon flex flex-col items-center w-20 h-20 p-2 hover:bg-white/10 rounded-xl transition cursor-pointer';
-      btn.innerHTML = `<div class="w-10 h-10 bg-[#131826] border border-os-border flex items-center justify-center font-mono text-base font-bold ${item.color} rounded-xl mb-1.5">${item.iconChar}</div>
+      btn.innerHTML = `<div class="w-10 h-10 bg-[#131826] border border-os-border flex items-center justify-center ${item.color} rounded-xl mb-1.5">${this.iconHtml(stored || item.iconChar)}</div>
                        <span class="text-[11px] text-slate-200 truncate w-full">${item.label}</span>`;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -970,7 +1228,7 @@ class LambdaOS {
 
   async bootInitScript() {
     try { await this.lisp.evalString(await this.vfs.read('/init.lisp')); }
-    catch(e) { this.notify('Boot Error', e.message); }
+    catch(e) { console.error('init.lisp boot failed:', e); this.notify('Boot Error', e.message); }
   }
 
   bindUIEvents() {
